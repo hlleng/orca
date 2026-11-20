@@ -1,0 +1,189 @@
+name: Build Windows Portable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (leave empty to use v<package.json version>, e.g. v1.4.214)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+      - 'portable-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows-portable:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/setup@v2
+        with:
+          install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          check-latest: true
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+
+      - name: Resolve version & release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $pkg = Get-Content -Raw package.json | ConvertFrom-Json
+          $version = $pkg.version
+          $ebKey = "electron$($pkg.devDependencies.electron)-builder$($pkg.devDependencies.'electron-builder')"
+
+          $inputTag = "${{ inputs.tag }}".Trim()
+          if ($inputTag) {
+            $tag = $inputTag
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+          } else {
+            $tag = "v$version"
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "eb_key=$ebKey" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Version: $version | Tag: $tag"
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v5
+        with:
+          path: ~\AppData\Local\electron-builder\Cache
+          key: electron-builder-win-${{ steps.meta.outputs.eb_key }}
+          restore-keys: |
+            electron-builder-win-
+
+      - name: Install root dependencies
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install mobile dependencies
+        uses: ./.github/actions/install-mobile-dependencies
+
+      - name: Prepare Windows agent hook (and ensure Rust toolchain)
+        uses: ./.github/actions/prepare-windows-agent-hook
+
+      - name: Build Windows native binaries & desktop assets
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          pnpm run build:native
+          pnpm run build:desktop:assets
+
+      - name: Prepare Electron native runtime
+        shell: pwsh
+        run: |
+          node config/scripts/native-build/node-addons/ensure-native-runtime.mjs --runtime=electron
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package unpacked Windows app
+        shell: pwsh
+        env:
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: '1'
+        run: |
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --win --dir --x64 --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify unpacked runtime files
+        shell: pwsh
+        run: |
+          $required = @(
+            'dist/win-unpacked/Orca.exe',
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty.node',
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty/conpty.dll',
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty/OpenConsole.exe',
+            'dist/win-unpacked/resources/bin/orca.exe',
+            'dist/win-unpacked/resources/bin/orca-administrator-restart.exe',
+            'dist/win-unpacked/resources/bin/orca-agent-hook.exe'
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
+              throw "Missing required file: $f"
+            }
+          }
+
+      - name: Add portable launcher script & create zip archive
+        id: archive
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $zipName = "Orca_${version}_windows_x64_portable.zip"
+          $zipPath = "dist/$zipName"
+          $shaPath = "$zipPath.sha256"
+
+          @(
+            '@echo off'
+            'start "" "%~dp0Orca.exe" --user-data-dir="%~dp0data" %*'
+          ) -join "`r`n" | Set-Content -Path 'dist/win-unpacked/Orca-Portable.cmd' -Encoding ASCII -NoNewline
+
+          if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+          $sevenZipCmd = Get-Command 7z -ErrorAction SilentlyContinue
+          $sevenZip = if ($sevenZipCmd) { $sevenZipCmd.Source } else { 'C:\Program Files\7-Zip\7z.exe' }
+          & $sevenZip a -tzip -mx=9 $zipPath '.\dist\win-unpacked\*'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zipName" | Set-Content -Path $shaPath -Encoding ASCII
+
+          "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha_path=$shaPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Get-Item -LiteralPath $zipPath, $shaPath
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Orca_${{ steps.meta.outputs.version }}_windows_x64_portable
+          path: |
+            ${{ steps.archive.outputs.zip_path }}
+            ${{ steps.archive.outputs.sha_path }}
+          retention-days: 14
+
+      - name: Publish to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $zipPath = "${{ steps.archive.outputs.zip_path }}"
+          $shaPath = "${{ steps.archive.outputs.sha_path }}"
+
+          $ErrorActionPreference = 'Continue'
+          gh release view $tag --repo $repo 2>&1 | Out-Null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = 'Stop'
+
+          if ($exists) {
+            gh release upload $tag $zipPath $shaPath --repo $repo --clobber
+          } else {
+            gh release create $tag $zipPath $shaPath `
+              --repo $repo `
+              --target "${{ github.sha }}" `
+              --title "Orca $tag (Windows Portable)" `
+              --notes "Unsigned Windows x64 portable build of Orca $tag. Extract and run ``Orca.exe`` (system profile) or ``Orca-Portable.cmd`` (stores user data in local ``data/`` folder)."
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
