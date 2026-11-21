@@ -10,6 +10,7 @@ const { netFetchMock, netRequestMock } = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
+  app: { isPackaged: true },
   net: { fetch: netFetchMock, request: netRequestMock }
 }))
 
