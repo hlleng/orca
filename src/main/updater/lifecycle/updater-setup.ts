@@ -1,3 +1,4 @@
+import { releaseRepository } from '../windows-portable/fork-portable-channel'
 import { app, powerMonitor } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { ReleaseBuild, ReleaseChannel } from '../../../shared/updater/release-channel'
@@ -182,7 +183,7 @@ export class UpdaterSetup extends UpdaterDownloadInstall {
     if (this.activeUpdateSource === 'release') {
       autoUpdater.setFeedURL({
         provider: 'generic',
-        url: 'https://github.com/stablyai/orca/releases/latest/download'
+        url: `https://github.com/${releaseRepository()}/releases/latest/download`
       })
     }
     if (this.autoUpdaterInitialized) {

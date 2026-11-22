@@ -1,3 +1,4 @@
+import { isForkPortable, releaseRepository } from './windows-portable/fork-portable-channel'
 import { app } from 'electron'
 import {
   isMacInstallerReady,
@@ -145,7 +146,10 @@ export function registerAutoUpdaterHandlers({
 
         // A concurrent error during the fetch must not leave stale available state.
         setAvailableVersion(info.version)
-        setAvailableReleaseUrl(null)
+        const releaseUrl = isForkPortable()
+          ? `https://github.com/${releaseRepository()}/releases/tag/v${encodeURIComponent(info.version)}`
+          : undefined
+        setAvailableReleaseUrl(releaseUrl ?? null)
         // Dev jumps must not suppress real background checks by persisting lastUpdateCheckAt.
         if (!isLocalBuildCheck() && !isPinnedBuildCheck()) {
           if (missingManifestFallback || publishingWindowLastGoodCheck) {
@@ -164,6 +168,7 @@ export function registerAutoUpdaterHandlers({
             state: 'available',
             version: info.version,
             changelog,
+            ...(releaseUrl ? { releaseUrl } : {}),
             // Tell clients this host cannot self-update before offering a download.
             ...(isExternallyManagedLinuxInstall() ? { externallyManaged: true } : {})
           },

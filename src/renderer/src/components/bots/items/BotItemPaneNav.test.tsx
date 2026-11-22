@@ -12,8 +12,7 @@ const reads = vi.hoisted(() => vi.fn())
 vi.mock('./use-bot-items', () => ({
   showBotItem: reads,
   commentOnBotItem: vi.fn(() => Promise.resolve()),
-  setBotItemsStatus: vi.fn(),
-  answerBotItem: vi.fn(() => Promise.resolve('answered'))
+  setBotItemsStatus: vi.fn()
 }))
 vi.mock('../BotGroupTranscriptOwner', () => ({ useBotGroupFileContexts: () => new Map() }))
 vi.mock('./BotItemActivityList', () => ({ BotItemActivityList: () => null }))
@@ -29,8 +28,6 @@ import {
   promptValue
 } from '../../native-chat/composer/editor/native-chat-prompt-editor.test-support'
 import { BotItemPane } from './BotItemPane'
-import { botRefKey } from '@/lib/bot-hosts'
-import { updateNativeChatComposerDraft } from '../../native-chat/drafts/native-chat-composer-draft-store'
 
 const BOT: Bot = {
   id: 'bot-a',
@@ -62,6 +59,7 @@ afterEach(() => {
   cleanup()
   reads.mockReset()
   useAppStore.setState({ keybindings: {} })
+  vi.useRealTimers()
 })
 
 /** The pane over a three-item walk; `listed` rows seed each item, as the panel's list does. */
@@ -73,8 +71,9 @@ function pane(
     items = ITEMS
   }: { listed?: boolean; unlisted?: string; items?: typeof ITEMS } = {}
 ): void {
-  function Walk(): React.JSX.Element {
+  function Walk(): React.JSX.Element | null {
     const [index, setIndex] = useState(start)
+    const [open, setOpen] = useState(true)
     const walk: BotItemWalkState = {
       uid: items[index].uid,
       place: { index: index + 1, total: items.length },
@@ -87,16 +86,16 @@ function pane(
       markGone: vi.fn(),
       close: vi.fn(() => null)
     }
-    return (
+    return open ? (
       <BotItemPane
         bot={BOT}
         uid={items[index].uid}
         listed={listed && items[index].uid !== unlisted ? items[index] : undefined}
         walk={walk}
         offline={false}
-        onBack={vi.fn()}
+        onBack={() => setOpen(false)}
       />
-    )
+    ) : null
   }
   render(
     <TooltipProvider>
@@ -204,25 +203,79 @@ it('says the shown item once it shows: not the opened one, a late one when it ar
   expect(said()).toBe('Item 2 of 3: Draft the release notes')
 })
 
-it("steps from an open question's answer field and keeps typing at the end of the next item's draft", () => {
-  reads.mockReturnValue(new Promise(() => {}))
-  const asking = makeTestBotItem(22, {
-    title: 'Draft the release notes',
-    status: 'needs_you',
-    question: { eventId: 'e3', text: 'Which notes ship?', answerable: true }
-  })
-  updateNativeChatComposerDraft(
-    `bot-item-comment:${botRefKey(BOT)}:${ITEMS[2].uid}`,
-    { text: 'draft for 23', images: [] },
-    'immediate'
-  )
-  pane(1, { items: [ITEMS[0], asking, ITEMS[2]] })
-  const answer = screen.getByPlaceholderText('Type your answer')
-  answer.focus()
-  press(answer, { key: 'ArrowDown', code: 'ArrowDown', metaKey: true, altKey: true })
+it('updates the mounted announcer once for a sustained cold read and clears it on opening', async () => {
+  vi.useFakeTimers()
+  const item = makeTestBotItem(191, { title: 'Review workspace setup' })
+  let arrive: (page: unknown) => void = () => {}
+  reads.mockReturnValue(new Promise((resolve) => (arrive = resolve)))
+  pane(0, { listed: false, items: [item] })
+  const region = screen.getByRole('status')
+  expect(region.textContent).toBe('')
+  expect(region.closest('[aria-busy]')).toBeNull()
+  const messages: string[] = []
+  const observer = new MutationObserver(() => messages.push(region.textContent ?? ''))
+  observer.observe(region, { childList: true, characterData: true, subtree: true })
+  try {
+    await act(async () => vi.advanceTimersByTime(400))
+    expect(screen.getByRole('status')).toBe(region)
+    expect(messages).toEqual(['Loading item…'])
+    await act(async () => vi.advanceTimersByTime(1000))
+    expect(messages).toEqual(['Loading item…'])
 
-  expect(heading()).toContain('Retry the help-text build')
-  expect(document.activeElement).toBe(editor())
-  expect(promptValue(editor())).toBe('draft for 23')
-  expect(promptEditor(editor()).state.selection.from).toBe(13)
+    await act(async () => arrive({ item, events: [] }))
+    expect(screen.getByRole('status')).toBe(region)
+    expect(region.textContent).toBe('')
+    await act(async () => vi.advanceTimersByTime(1000))
+    expect(messages).toEqual(['Loading item…', ''])
+  } finally {
+    observer.disconnect()
+  }
+})
+
+it('keeps rapid opening silent and cancels a cold read when Home closes the pane', async () => {
+  vi.useFakeTimers()
+  const item = makeTestBotItem(192, { title: 'Open the setup checklist' })
+  let arrive: (page: unknown) => void = () => {}
+  reads.mockReturnValue(new Promise((resolve) => (arrive = resolve)))
+  pane(0, { listed: false, items: [item] })
+  const region = screen.getByRole('status')
+  await act(async () => arrive({ item, events: [] }))
+  await act(async () => vi.advanceTimersByTime(1000))
+  expect(region.textContent).toBe('')
+  cleanup()
+
+  reads.mockReturnValue(new Promise((resolve) => (arrive = resolve)))
+  pane(0, { listed: false, items: [makeTestBotItem(193)] })
+  const abandoned = screen.getByRole('status')
+  fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+  await act(async () => vi.advanceTimersByTime(1000))
+  await act(async () => arrive({ item, events: [] }))
+  expect(document.contains(abandoned)).toBe(false)
+  expect(abandoned.textContent).toBe('')
+  expect(screen.queryByRole('heading', { level: 2 })).toBeNull()
+})
+
+it('restarts cold speech when stepping and replaces it only with the current item announcement', async () => {
+  vi.useFakeTimers()
+  const first = makeTestBotItem(194, { title: 'First cold item' })
+  const next = makeTestBotItem(195, { title: 'Next cold item' })
+  const arrivals = new Map<string, (page: unknown) => void>()
+  reads.mockImplementation(
+    (_bot: unknown, uid: string) => new Promise((resolve) => arrivals.set(uid, resolve))
+  )
+  pane(0, { listed: false, items: [first, next] })
+  const region = screen.getByRole('status')
+  await act(async () => vi.advanceTimersByTime(200))
+  fireEvent.click(screen.getByRole('button', { name: 'Next item' }))
+  await act(async () => vi.advanceTimersByTime(200))
+  expect(region.textContent).toBe('')
+  await act(async () => vi.advanceTimersByTime(200))
+  expect(region.textContent).toBe('Loading item…')
+  await act(async () => arrivals.get(first.uid)?.({ item: first, events: [] }))
+  expect(region.textContent).toBe('Loading item…')
+  await act(async () => arrivals.get(next.uid)?.({ item: next, events: [] }))
+  expect(screen.getByRole('status')).toBe(region)
+  expect(region.textContent).toBe('Item 2 of 2: Next cold item')
+  await act(async () => vi.advanceTimersByTime(1000))
+  expect(region.textContent).toBe('Item 2 of 2: Next cold item')
 })

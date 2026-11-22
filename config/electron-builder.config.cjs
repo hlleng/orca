@@ -197,6 +197,8 @@ const commonExtraResources = [
 const debElectronRuntimeDependencies = [
   'libgtk-3-0',
   'libnotify4',
+  'dbus-bin | dbus',
+  'libglib2.0-bin',
   'libnss3',
   'libxss1',
   'libxtst6',
@@ -211,6 +213,7 @@ const debElectronRuntimeDependencies = [
 const rpmElectronRuntimeDependencies = [
   'gtk3',
   'libnotify',
+  '/usr/bin/dbus-send',
   'nss',
   'libXScrnSaver',
   '(libXtst or libXtst6)',
@@ -639,6 +642,10 @@ module.exports = {
       {
         from: 'native/windows-cli-launcher/.build/orca-administrator-restart.exe',
         to: 'bin/orca-administrator-restart.exe'
+      },
+      {
+        from: 'native/windows-cli-launcher/.build/orca-portable-updater.exe',
+        to: 'bin/orca-portable-updater.exe'
       },
       // Why resources/bin: SignPath signs every unsigned PE under win-unpacked, and the hook
       // installer copies this signed file into ~/.orca/agent-hooks (#20913).
