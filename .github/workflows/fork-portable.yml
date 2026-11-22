@@ -18,7 +18,9 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository == 'hlleng/orca' && github.ref_name == github.event.repository.default_branch
+    if: >-
+      github.repository == 'hlleng/orca' && github.ref_name == github.event.repository.default_branch &&
+      (vars.PORTABLE_PUBLIC_KEY != '' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: write
