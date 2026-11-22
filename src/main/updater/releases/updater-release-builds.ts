@@ -1,7 +1,8 @@
+import { isForkPortable, releaseRepository } from '../windows-portable/fork-portable-channel'
 import { net } from 'electron'
 import {
   findInstallerAssetName,
-  getReleaseRepoForChannel,
+  getReleaseRepoForChannel as upstreamReleaseRepoForChannel,
   getVersionChannel,
   hasInstallableArtifactForPlatform,
   normalizeTagToVersion,
@@ -207,4 +208,8 @@ export function resolveTargetBuild(channel: ReleaseChannel, tag: string): Resolv
   }
   const repo = getReleaseRepoForChannel(channel)
   return { tag, version, feedUrl: getReleaseDownloadUrlForRepo(repo, tag) }
+}
+
+function getReleaseRepoForChannel(channel: ReleaseChannel): string {
+  return isForkPortable() ? releaseRepository() : upstreamReleaseRepoForChannel(channel)
 }

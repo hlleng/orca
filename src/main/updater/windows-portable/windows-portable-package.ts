@@ -4,8 +4,7 @@ import { getReleaseDownloadUrl } from '../releases/updater-release-readiness'
 
 export const WINDOWS_PORTABLE_ARCHIVE_NAME = 'orca-windows-x64-portable.zip'
 export const WINDOWS_PORTABLE_SHA256_NAME = `${WINDOWS_PORTABLE_ARCHIVE_NAME}.sha256`
-export const WINDOWS_PORTABLE_ROOT_DIR = 'Orca-portable'
-export const WINDOWS_PORTABLE_DATA_DIR = 'data'
+export { WINDOWS_PORTABLE_ROOT_DIR, WINDOWS_PORTABLE_DATA_DIR } from './windows-portable-layout'
 export const WINDOWS_PORTABLE_PUBLISHER = 'SignPath Foundation'
 
 export const WINDOWS_PORTABLE_REQUIRED_SIGNED_EXECUTABLES = [

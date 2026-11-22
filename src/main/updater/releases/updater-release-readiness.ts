@@ -1,3 +1,4 @@
+import { isForkPortable, releaseRepository } from '../windows-portable/fork-portable-channel'
 import { net } from 'electron'
 import { parse } from 'yaml'
 import { isWindowsPortablePackage } from '../linux-package/linux-update-package-type'
@@ -6,11 +7,10 @@ import {
   WINDOWS_PORTABLE_SHA256_NAME
 } from '../windows-portable/windows-portable-package'
 
-const RELEASES_DOWNLOAD_BASE = 'https://github.com/stablyai/orca/releases/download'
 export const FETCH_TIMEOUT_MS = 5000
 
 export function getReleaseDownloadUrl(tag: string): string {
-  return `${RELEASES_DOWNLOAD_BASE}/${encodeURIComponent(tag)}`
+  return `https://github.com/${releaseRepository()}/releases/download/${encodeURIComponent(tag)}`
 }
 
 function getPlatformManifestName(): string {
@@ -112,7 +112,7 @@ async function getReleaseAssetReadiness(tag: string, assetName: string): Promise
   const isGitHubReleaseAsset =
     process.platform === 'win32' &&
     (isRelativeAsset ||
-      /^https:\/\/github\.com\/stablyai\/orca\/releases\/download\//i.test(assetName))
+      assetName.startsWith(`https://github.com/${releaseRepository()}/releases/download/`))
   const assetUrl = isRelativeAsset
     ? getReleaseAssetUrl(tag, assetName.split('/').findLast(Boolean) ?? assetName)
     : assetName
@@ -156,7 +156,11 @@ export async function getPlatformManifestReadiness(tag: string): Promise<Release
       return 'not-ready'
     }
     const requiredAssets = isWindowsPortablePackage()
-      ? [WINDOWS_PORTABLE_ARCHIVE_NAME, WINDOWS_PORTABLE_SHA256_NAME]
+      ? [
+          WINDOWS_PORTABLE_ARCHIVE_NAME,
+          WINDOWS_PORTABLE_SHA256_NAME,
+          ...(isForkPortable() ? [`${WINDOWS_PORTABLE_SHA256_NAME}.sig`] : [])
+        ]
       : assetNames
     const assetResults = await Promise.all(
       requiredAssets.map((assetName) => getReleaseAssetReadiness(tag, assetName))

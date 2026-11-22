@@ -1,3 +1,4 @@
+import { isForkPortable, verifyPortableChecksum } from './fork-portable-channel'
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, open, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -8,6 +9,7 @@ import { spawnDetachedWithoutInheritance } from '@orca/process-host/isolated-det
 import { extractWindowsPortableArchive } from './windows-portable-archive'
 import {
   getWindowsPortableAssetUrls,
+  getWindowsPortableReleaseTag,
   isWindowsPortableInstall,
   parseSha256ChecksumFile,
   resolveBundledPortableUpdaterPath,
@@ -123,7 +125,10 @@ async function buildStagedManifestLines(
   for (const entry of entries) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name
     const relLower = rel.toLowerCase()
-    if (relLower === WINDOWS_PORTABLE_DATA_DIR || relLower.startsWith(`${WINDOWS_PORTABLE_DATA_DIR}/`)) {
+    if (
+      relLower === WINDOWS_PORTABLE_DATA_DIR ||
+      relLower.startsWith(`${WINDOWS_PORTABLE_DATA_DIR}/`)
+    ) {
       continue
     }
     const fullPath = join(currentDir, entry.name)
@@ -171,10 +176,19 @@ export async function downloadAndStageWindowsPortableUpdate(options: {
     if (!shaRes.ok) {
       throw new Error(`Could not download portable update checksum (HTTP ${shaRes.status})`)
     }
-    const expectedSha256 = parseSha256ChecksumFile(
-      await shaRes.text(),
-      WINDOWS_PORTABLE_ARCHIVE_NAME
-    )
+    const checksum = await shaRes.text()
+    if (isForkPortable()) {
+      const signature = await net.fetch(`${sha256Url}.sig`, { signal: AbortSignal.timeout(30_000) })
+      if (!signature.ok) {
+        throw new Error(`Could not download portable release signature (HTTP ${signature.status})`)
+      }
+      verifyPortableChecksum(
+        getWindowsPortableReleaseTag(options.version),
+        checksum,
+        await signature.text()
+      )
+    }
+    const expectedSha256 = parseSha256ChecksumFile(checksum, WINDOWS_PORTABLE_ARCHIVE_NAME)
 
     const archivePath = join(workDir, 'download.zip')
     const stagedDir = join(workDir, 'staged')
@@ -195,11 +209,13 @@ export async function downloadAndStageWindowsPortableUpdate(options: {
       }
 
       await extractWindowsPortableArchive(archivePath, stagedDir)
-      await verifyStagedExecutables(
-        updaterBinary,
-        stagedDir,
-        options.expectedPublisher ?? WINDOWS_PORTABLE_PUBLISHER
-      )
+      if (!isForkPortable()) {
+        await verifyStagedExecutables(
+          updaterBinary,
+          stagedDir,
+          options.expectedPublisher ?? WINDOWS_PORTABLE_PUBLISHER
+        )
+      }
       const manifestLines = (await buildStagedManifestLines(stagedDir, stagedDir)).sort()
       await writeFile(manifestPath, `${manifestLines.join('\n')}\n`, 'utf8')
     } catch (error) {

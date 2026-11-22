@@ -1,5 +1,5 @@
 import type { FileHandle } from 'node:fs/promises'
-import { WINDOWS_PORTABLE_DATA_DIR, WINDOWS_PORTABLE_ROOT_DIR } from './windows-portable-package'
+import { WINDOWS_PORTABLE_DATA_DIR, WINDOWS_PORTABLE_ROOT_DIR } from './windows-portable-layout'
 
 const EOCD_SIGNATURE = 0x06054b50
 const ZIP64_EOCD_LOCATOR_SIGNATURE = 0x07064b50
@@ -43,7 +43,12 @@ export async function readFileRange(
   const buffer = Buffer.allocUnsafe(length)
   let totalRead = 0
   while (totalRead < length) {
-    const { bytesRead } = await handle.read(buffer, totalRead, length - totalRead, offset + totalRead)
+    const { bytesRead } = await handle.read(
+      buffer,
+      totalRead,
+      length - totalRead,
+      offset + totalRead
+    )
     if (bytesRead === 0) {
       throw new Error('Unexpected end of ZIP archive')
     }
