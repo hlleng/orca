@@ -6,7 +6,6 @@ import type { LinuxRootPackageType } from '../../../shared/updater/update-status
 
 export type LinuxPackageType = LinuxRootPackageType | 'non-root' | 'unusable'
 
-let cachedPackageType: LinuxPackageType | undefined
 let cachedExternallyManaged: boolean | undefined
 
 function warnMarkerUnusable(detail: string): void {
@@ -103,23 +102,22 @@ function readPackageTypeMarker(): LinuxPackageType | 'portable' {
   return 'unusable'
 }
 
-// Startup needs the profile location before Electron is ready; update checks reuse that identity.
-const windowsPortable =
-  process.platform === 'win32' &&
-  typeof process.resourcesPath === 'string' &&
-  readPackageTypeMarker() === 'portable'
+// Packaged Electron fixes resourcesPath for the process lifetime. Resolve the marker once.
+const packageType = typeof process.resourcesPath === 'string' ? readPackageTypeMarker() : undefined
 
 export function isWindowsPortablePackage(): boolean {
-  return windowsPortable
+  return packageType === 'portable'
 }
 
 /** Packaged Linux builds require a valid marker, except legacy AppImages with a missing marker. */
 export function getLinuxPackageType(): LinuxPackageType {
-  if (cachedPackageType === undefined) {
-    const marker = process.platform === 'linux' ? readPackageTypeMarker() : 'non-root'
-    cachedPackageType = marker === 'portable' ? 'non-root' : marker
+  if (process.platform !== 'linux') {
+    return 'non-root'
   }
-  return cachedPackageType
+  if (packageType === undefined) {
+    return app.isPackaged ? 'unusable' : 'non-root'
+  }
+  return packageType === 'portable' ? 'non-root' : packageType
 }
 
 export function getLinuxRootPackageType(): LinuxRootPackageType | null {
