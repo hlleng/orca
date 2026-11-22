@@ -23,7 +23,7 @@
   openssl pkey -in "$keys/private.pem" -pubout -out "$keys/public.pem"
   gh api -X PUT repos/hlleng/orca/environments/portable-release
   gh secret set PORTABLE_PRIVATE_KEY -R hlleng/orca --env portable-release < "$keys/private.pem"
-  gh variable set PORTABLE_PUBLIC_KEY -R hlleng/orca < "$keys/public.pem"
+  gh api -X POST repos/hlleng/orca/actions/variables -f name=PORTABLE_PUBLIC_KEY -F "value=@$keys/public.pem"
 )
 ```
 
