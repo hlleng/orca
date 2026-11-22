@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run in a disposable Linux checkout of fork-portable.
 set -euo pipefail
-: "${TAG:?}" "${PORTABLE_PUBLIC_KEY:?}" "${UPSTREAM_COMMIT:?}"
+: "${TAG:?}" "${PORTABLE_PUBLIC_KEY:?}" "${UPSTREAM_COMMIT:?}" "${GITHUB_SHA:?}"
 [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
 base=b71747a6184c208432c120861d9a1353687307ac
 recipe=$(git rev-parse HEAD)
@@ -22,5 +22,10 @@ JS
 git add src/main/updater/windows-portable/fork-portable-channel.json
 export GIT_AUTHOR_DATE="$(git show -s --format=%cI HEAD)"
 export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
-git -c user.name=portable-release -c user.email=portable-release@users.noreply.github.com \
-  commit -m "Build Windows portable $TAG from $UPSTREAM_COMMIT" -m "Portable recipe: $recipe"
+# Publish application sources onto the fork's dispatch commit, retaining its workflow policy.
+git restore --source="$GITHUB_SHA" --staged --worktree -- .github/workflows
+tree=$(git write-tree)
+test "$(git rev-parse "$tree:.github/workflows")" = "$(git rev-parse "$GITHUB_SHA:.github/workflows")"
+source_commit=$(git -c user.name=portable-release -c user.email=portable-release@users.noreply.github.com \
+  commit-tree "$tree" -p "$GITHUB_SHA" -m "Build Windows portable $TAG from $UPSTREAM_COMMIT" -m "Portable recipe: $recipe")
+git switch --detach "$source_commit"
