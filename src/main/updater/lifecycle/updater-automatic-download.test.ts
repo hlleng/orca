@@ -32,6 +32,7 @@ vi.mock('../mac-install/shipit-leftover-recovery', () => ({
 }))
 vi.mock('../linux-package/linux-update-package-type', () => ({
   getLinuxPackageType: () => 'non-root',
+  isWindowsPortablePackage: () => false,
   getLinuxRootPackageType: () => null,
   isExternallyManagedLinuxInstall: () => false
 }))

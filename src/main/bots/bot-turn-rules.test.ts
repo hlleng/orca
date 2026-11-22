@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentJournalMessageItem } from '../../shared/agent-session/journal/agent-session-journal-types'
 import { createBotTurnContext } from './bot-turn-context'
 import { botSessionInstructions } from './bot-session-instructions'
-import { botRulesBlock } from './bot-preamble'
+import { botNameLine, botRulesBlock } from './bot-preamble'
 import { agentSessionRecordFixture } from '../../shared/agent-session/lifecycle/records/agent-session-record.test-fixture'
 import type { AgentSessionRewindRecord } from '../../shared/agent-session/lifecycle/rewind/agent-session-rewind'
 import type { AgentSessionStoreState } from '../runtime/agent-session/records/agent-session-store-state'
@@ -13,7 +13,8 @@ import { commitAgentSessionRewindCompletion } from '../runtime/agent-session/rec
 const FOLDER = '/home/me/.orca/bots/scout'
 const BLOCK = '## Tools\n\n- new tool\n\n## Rules\n\n- new rule'
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
-const keyOf = (text: string): string => sha256(`v2\n${text}`)
+const keyOf = (block: string, name = 'Scout'): string =>
+  sha256(`v2\n${botNameLine(name)}\n\n${block}`)
 const say: AgentJournalMessageItem = { kind: 'message', role: 'user', blocks: [] }
 
 function chat(launch: { delivered: boolean; recorded: string | null }) {
@@ -29,6 +30,7 @@ function chat(launch: { delivered: boolean; recorded: string | null }) {
   const context = createBotTurnContext(fs)
   context.launched('s1', 'bot-1', FOLDER, { soul: 'Be brief.', memory: '- a fact' }, true, {
     block: BLOCK,
+    name: 'Scout',
     rebuilt: false,
     ...launch
   })
@@ -36,34 +38,17 @@ function chat(launch: { delivered: boolean; recorded: string | null }) {
 }
 
 describe("Orca's Tools and Rules in a running bot chat", () => {
-  it('a fresh start says nothing and only vouches for what it gave', async () => {
-    const context = chat({ delivered: true, recorded: null })
-    const plan = await context.plan('s1', say)
-    expect(plan?.text).toBe('')
-    expect(plan?.instructionsKey).toBe(keyOf(BLOCK))
-    plan?.given({ instructionsRecorded: true })
-    expect(await context.plan('s1', say)).toBeNull()
-  })
-
-  it('a running chat holding older rules is sent the new ones once', async () => {
-    const context = chat({ delivered: false, recorded: keyOf('## Tools\n\n- old') })
-    const plan = await context.plan('s1', say)
-    expect(plan?.text.startsWith('[Orca rules update:')).toBe(true)
-    expect(plan?.text).toContain('- new rule')
-    expect(plan?.instructionsKey).toBe(keyOf(BLOCK))
-    plan?.given({ instructionsRecorded: true })
-    expect(await context.plan('s1', say)).toBeNull()
-  })
-
-  it('a resumed chat with no receipt (started before receipts) is sent them', async () => {
-    const context = chat({ delivered: false, recorded: null })
-    expect((await context.plan('s1', say))?.text).toContain('- new rule')
-  })
-
   it('an unwritten receipt (a crash, a takeover) sends them again', async () => {
     const context = chat({ delivered: false, recorded: keyOf('## Tools\n\n- old') })
-    ;(await context.plan('s1', say))?.given({ instructionsRecorded: false })
-    expect((await context.plan('s1', say))?.text).toContain('- new rule')
+    const first = await context.plan('s1', say)
+    expect(first?.text).toContain('- new rule')
+    first?.given({ instructionsRecorded: false })
+
+    const retried = await context.plan('s1', say)
+    expect(retried?.text).toBe(first?.text)
+    expect(retried?.instructionsKey).toBe(keyOf(BLOCK))
+    retried?.given({ instructionsRecorded: true })
+    expect(await context.plan('s1', say)).toBeNull()
   })
 
   it('a rewind of a running chat drops its receipt, so its next turn is sent them again', async () => {

@@ -6,7 +6,6 @@ import type { LinuxRootPackageType } from '../../../shared/updater/update-status
 
 export type LinuxPackageType = LinuxRootPackageType | 'non-root' | 'unusable'
 
-let cachedPackageType: LinuxPackageType | undefined
 let cachedExternallyManaged: boolean | undefined
 
 function warnMarkerUnusable(detail: string): void {
@@ -58,12 +57,16 @@ function hasLegacyAppImageRuntimeIdentity(resourcesPath: unknown): boolean {
   })
 }
 
-function readPackageTypeMarker(): LinuxPackageType {
-  if (process.platform !== 'linux' || !app.isPackaged) {
+function readPackageTypeMarker(): LinuxPackageType | 'portable' {
+  const windows = process.platform === 'win32'
+  if ((!windows && process.platform !== 'linux') || !app.isPackaged) {
     return 'non-root'
   }
   const resourcesPath = process.resourcesPath
   if (typeof resourcesPath !== 'string' || resourcesPath.length === 0) {
+    if (windows) {
+      return 'non-root'
+    }
     warnMarkerUnusable('resourcesPath unavailable')
     return 'unusable'
   }
@@ -71,6 +74,9 @@ function readPackageTypeMarker(): LinuxPackageType {
   try {
     raw = readFileSync(path.join(resourcesPath, 'package-type'), 'utf8')
   } catch (error) {
+    if (windows) {
+      return 'non-root'
+    }
     if (
       (error as NodeJS.ErrnoException)?.code === 'ENOENT' &&
       hasLegacyAppImageRuntimeIdentity(resourcesPath)
@@ -83,6 +89,9 @@ function readPackageTypeMarker(): LinuxPackageType {
     return 'unusable'
   }
   const value = raw.trim()
+  if (windows) {
+    return value === 'portable' ? 'portable' : 'non-root'
+  }
   if (value === 'deb' || value === 'rpm') {
     return value
   }
@@ -93,12 +102,22 @@ function readPackageTypeMarker(): LinuxPackageType {
   return 'unusable'
 }
 
+// Packaged Electron fixes resourcesPath for the process lifetime. Resolve the marker once.
+const packageType = typeof process.resourcesPath === 'string' ? readPackageTypeMarker() : undefined
+
+export function isWindowsPortablePackage(): boolean {
+  return packageType === 'portable'
+}
+
 /** Packaged Linux builds require a valid marker, except legacy AppImages with a missing marker. */
 export function getLinuxPackageType(): LinuxPackageType {
-  if (cachedPackageType === undefined) {
-    cachedPackageType = readPackageTypeMarker()
+  if (process.platform !== 'linux') {
+    return 'non-root'
   }
-  return cachedPackageType
+  if (packageType === undefined) {
+    return app.isPackaged ? 'unusable' : 'non-root'
+  }
+  return packageType === 'portable' ? 'non-root' : packageType
 }
 
 export function getLinuxRootPackageType(): LinuxRootPackageType | null {

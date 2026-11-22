@@ -4,10 +4,13 @@ import { CONNECTOR_PATHS } from '../../shared/connectors/connector-cloud-contrac
 import { JOURNAL_CONNECTOR_REPLIES_SCHEMA } from '../native-chat/agent-session-journal/connector-replies/journal-connector-replies-schema'
 import {
   fillJournalConnectorReplies,
-  readJournalConnectorReplies,
   recordJournalConnectorReplies,
   sentJournalConnectorReplies
 } from '../native-chat/agent-session-journal/connector-replies/journal-connector-replies'
+import {
+  readJournalConnectorReplies,
+  readOwedJournalConnectorReplies
+} from '../native-chat/agent-session-journal/connector-replies/journal-connector-replies-read'
 import type { ExternalConversationLink } from '../../shared/connectors/external-conversation-link'
 import Database from '../sqlite/sync-database'
 import { eraseRpcMethods, type RpcContext } from '../runtime/rpc/core'
@@ -21,6 +24,7 @@ import {
   settle
 } from './connector-poll-client.test-fixture'
 import { drainReplyId, type ConnectorReplyJournal } from './connector-reply-outbox'
+import { CONNECTOR_REHELLO_SPREAD_MS } from './connector-poll-control'
 import { ConnectorTurnEvents } from './connector-turn-events'
 import { postConnectorOutboxReply } from './connector-replies'
 import { ConnectorAccountTransport } from './connector-transport'
@@ -38,6 +42,8 @@ function openJournal(path: string): ConnectorReplyJournal & { db: Database.Datab
   return {
     db,
     read: async () => readJournalConnectorReplies(db),
+    readOwed: async (account, after, limit) =>
+      readOwedJournalConnectorReplies(db, account, after, limit),
     fillOutcomes: async (fills) => fillJournalConnectorReplies(db, fills, SERVER_NOW) > 0,
     sent: async (keys) => sentJournalConnectorReplies(db, keys, SERVER_NOW)
   }
@@ -139,7 +145,8 @@ describe('a reply in transit across the kill switch and back', () => {
     h.fake.features = ['replies.outbox']
     h.fake.forgetHello()
     h.poll([])
-    await settle(2_000)
+    // The 409 asks for a hello after a random spread (0.5 of it here).
+    await settle(CONNECTOR_REHELLO_SPREAD_MS)
     admitAndAnswer(journal.db, 'd2', 'Second answer.')
     void next.events.drainReplies()
     await settle(100)

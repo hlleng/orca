@@ -67,6 +67,21 @@ it('names the question an answer is for, and tells the bot to carry on with it',
 
   expect(mail?.body).toContain('answered your question e5 (event e7)')
   expect(mail?.body).toContain('1. Ship it? → Yes')
-  expect(mail?.body).toContain('Your owner answered your question: carry on with that answer')
+  expect(mail?.body).toContain(
+    'Your owner answered your question, and the item is In progress again'
+  )
   expect(mail?.body).not.toContain('is not a recorded answer')
+})
+
+it('names each skill picked in a comment by its file, for the bot to load', () => {
+  const picked = comment(3, '/release-notes for this one', [])
+  picked.data.skills = [
+    { name: 'release-notes', path: '/bots/b/.claude/skills/release-notes/SKILL.md' }
+  ]
+
+  const mail = botItemChangeMail([{ event: picked, item }])
+
+  expect(mail?.body).toContain(
+    '[Orca: they picked a skill for this; load each from its file and follow it: release-notes "/bots/b/.claude/skills/release-notes/SKILL.md"]'
+  )
 })

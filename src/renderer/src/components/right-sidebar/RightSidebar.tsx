@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { PanelRight } from 'lucide-react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { SidebarToggleIcon } from '@/components/icons/SidebarToggleIcon'
 import { useAppStore } from '@/store/index'
 import { cn } from '@/lib/class-names'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
@@ -20,6 +20,7 @@ import { useTranslate } from '@/i18n/use-translate'
 import { useUiLanguageRevision } from '@/i18n/use-ui-language-revision'
 import { RightSidebarPanelContent } from './right-sidebar-panel-content'
 import { useMeasuredWidth } from './layout/right-sidebar-measured-width'
+import { RightSidebarGutterResizeProvider } from './layout/right-sidebar-gutter-resize'
 import {
   isPairedWebClientWindow,
   shouldRenderDesktopWindowChrome
@@ -133,7 +134,7 @@ function RightSidebarInner(): React.JSX.Element {
     windowWidth,
     activityBarSideWidth
   )
-  const { containerRef, onResizeStart } = useSidebarResize<HTMLDivElement>({
+  const { containerRef, isResizing, onResizeStart } = useSidebarResize<HTMLDivElement>({
     isOpen: rightSidebarOpen,
     width: renderedRightSidebarWidth,
     minWidth: RIGHT_SIDEBAR_MIN_WIDTH,
@@ -143,6 +144,22 @@ function RightSidebarInner(): React.JSX.Element {
     setWidth: setRightSidebarWidth
   })
   const topActivityStripRef = useMeasuredWidth(setTopActivityStripWidth)
+  const resizeHandleRef = useRef<HTMLDivElement | null>(null)
+  const gutterHoverOwnerRef = useRef<HTMLElement | null>(null)
+  const onResizeStartRef = useRef(onResizeStart)
+  useLayoutEffect(() => {
+    onResizeStartRef.current = onResizeStart
+  })
+  // Stable, so the panels below never re-render for the resize callback's width-dependent identity.
+  const gutterResize = useMemo(
+    () => ({
+      startResize: (event: React.MouseEvent) => onResizeStartRef.current(event),
+      containerRef,
+      handleRef: resizeHandleRef,
+      hoverOwnerRef: gutterHoverOwnerRef
+    }),
+    [containerRef]
+  )
 
   const panelContent = rightSidebarOpen ? (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden scrollbar-sleek-parent">
@@ -155,12 +172,14 @@ function RightSidebarInner(): React.JSX.Element {
         </div>
       ) : (
         // Keep panels mounted across worktree switches; remounts caused Windows IPC storms and multi-second freezes.
-        <RightSidebarPanelContent
-          effectiveTab={effectiveTab}
-          rightSidebarOpen={rightSidebarOpen}
-          focusVaultSearch={focusVaultSearch}
-          onVaultSearchFocusHandled={() => setFocusVaultSearch(false)}
-        />
+        <RightSidebarGutterResizeProvider value={gutterResize}>
+          <RightSidebarPanelContent
+            effectiveTab={effectiveTab}
+            rightSidebarOpen={rightSidebarOpen}
+            focusVaultSearch={focusVaultSearch}
+            onVaultSearchFocusHandled={() => setFocusVaultSearch(false)}
+          />
+        </RightSidebarGutterResizeProvider>
       )}
     </div>
   ) : null
@@ -199,7 +218,7 @@ function RightSidebarInner(): React.JSX.Element {
           onClick={toggleRightSidebar}
           aria-label={t('auto.components.right.sidebar.index.e8e2e4ce74', 'Toggle right sidebar')}
         >
-          <PanelRight size={16} />
+          <SidebarToggleIcon side="right" size={16} />
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
@@ -239,7 +258,7 @@ function RightSidebarInner(): React.JSX.Element {
           />
         ) : (
           /* The 40px activity bar absorbs part of the 138px window-control overlay; inset the header by the remaining 98px. */
-          <div className="flex items-center justify-between h-[36px] min-h-[36px] px-3 border-b border-border right-sidebar-header-side-inset right-sidebar-header-drag">
+          <div className="flex h-(--app-header-height) min-h-(--app-header-height) items-center justify-between border-b border-border px-3 right-sidebar-header-side-inset right-sidebar-header-drag">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
               {visibleItems.find((item) => item.id === effectiveTab)?.title ?? ''}
             </span>
@@ -252,7 +271,11 @@ function RightSidebarInner(): React.JSX.Element {
         {panelContent}
 
         <div
-          className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-ring/20 active:bg-ring/30 transition-colors z-10"
+          ref={resizeHandleRef}
+          className={cn(
+            'absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-ring/20 data-[gutter-hover]:bg-ring/20 active:bg-ring/30 transition-colors z-10',
+            isResizing && 'bg-ring/30'
+          )}
           onMouseDown={onResizeStart}
         />
       </div>
