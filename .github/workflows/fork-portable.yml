@@ -1,0 +1,196 @@
+name: Fork Windows portable release
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable upstream tag (empty selects the next unpublished version)
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-portable-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.repository == 'hlleng/orca' && github.ref_name == github.event.repository.default_branch &&
+      (vars.PORTABLE_PUBLIC_KEY != '' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.select.outputs.tag }}
+      source: ${{ steps.source.outputs.sha }}
+      recipe: ${{ steps.source.outputs.recipe }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fork-portable
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.tag }}
+          FIRST: ${{ vars.PORTABLE_FIRST_TAG || 'v1.4.269' }}
+        run: |
+          set -euo pipefail
+          pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          [[ "$FIRST" =~ $pattern ]]
+          git ls-remote --refs --tags https://github.com/stablyai/orca.git 'v*' |
+            sed 's@.*refs/tags/@@' | grep -Ex "${pattern}" | sort -V > "$RUNNER_TEMP/stable"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name' > "$RUNNER_TEMP/published"
+          if [[ -n "$REQUESTED" ]]; then
+            [[ "$REQUESTED" =~ $pattern ]] && grep -Fxq "$REQUESTED" "$RUNNER_TEMP/stable" || exit 1
+            if ! grep -Fxq "$REQUESTED" "$RUNNER_TEMP/published"; then echo "tag=$REQUESTED" >> "$GITHUB_OUTPUT"; fi
+          else
+            awk -v first="$FIRST" 'BEGIN {while ((getline s < ARGV[1]) > 0) done[s]=1; ARGV[1]=""}
+              $0==first {active=1} active && !done[$0] {print "tag=" $0; exit}' \
+              "$RUNNER_TEMP/published" "$RUNNER_TEMP/stable" >> "$GITHUB_OUTPUT"
+            grep -Fxq "$FIRST" "$RUNNER_TEMP/stable"
+          fi
+      - id: source
+        if: steps.select.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ steps.select.outputs.tag }}
+          PORTABLE_PUBLIC_KEY: ${{ vars.PORTABLE_PUBLIC_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          recipe=$(git rev-parse HEAD)
+          git fetch --no-tags https://github.com/stablyai/orca.git "refs/tags/$TAG"
+          UPSTREAM_COMMIT=$(git rev-parse 'FETCH_HEAD^{commit}')
+          export UPSTREAM_COMMIT
+          prior=$(grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/published" | sort -V | tail -1 || true)
+          if [[ -n "$prior" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/contents/src/main/updater/windows-portable/fork-portable-channel.json?ref=$prior" \
+              --jq .content | base64 -d | jq -er .publicKey | openssl pkey -pubin -outform DER > "$RUNNER_TEMP/prior.der"
+            openssl pkey -pubin -outform DER <<< "$PORTABLE_PUBLIC_KEY" | cmp "$RUNNER_TEMP/prior.der" -
+          fi
+          bash config/scripts/release/fork-portable/prepare.sh
+          sha=$(git rev-parse HEAD)
+          existing=$(git ls-remote --refs origin "refs/tags/$TAG" | cut -f1)
+          if [[ -n "$existing" && "$existing" != "$sha" ]]; then
+            echo "::error::Existing fork tag $TAG points to another commit"; exit 1
+          fi
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/portable-builds/$TAG-$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "recipe=$recipe" >> "$GITHUB_OUTPUT"
+
+  template:
+    needs: prepare
+    if: needs.prepare.outputs.source != ''
+    uses: ./.github/workflows/qualified-orcad-template.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      ref: ${{ needs.prepare.outputs.source }}
+      fast_runners: false
+
+  windows:
+    needs: [prepare, template]
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      ORCA_BACKGROUND_LAUNCH: '1'
+      ORCA_REQUIRE_ORCAD_TEMPLATE: '1'
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+          persist-credentials: false
+      - uses: pnpm/setup@v2
+        with:
+          install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/install-mobile-dependencies
+      - run: pnpm build:release
+      - uses: actions/download-artifact@v8
+        with:
+          name: orcad-template
+          path: out/orcad-template
+      - name: Build archive and exercise the portable installer
+        shell: bash
+        env:
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: '1'
+        run: |
+          set -euo pipefail
+          pnpm run ensure:electron-runtime
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --win --dir --x64 --publish never
+          node config/scripts/desktop-distribution/windows/package-windows-portable.mjs
+          node config/scripts/release/fork-portable/smoke.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-portable
+          path: dist/orca-windows-x64-portable.zip*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  publish:
+    needs: [prepare, windows]
+    runs-on: ubuntu-latest
+    environment: portable-release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE: ${{ needs.prepare.outputs.source }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.recipe }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-portable
+          path: assets
+      - name: Sign the version and archive digest
+        env:
+          PORTABLE_PRIVATE_KEY: ${{ secrets.PORTABLE_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          PORTABLE_PUBLIC_KEY=$(gh api "repos/$GITHUB_REPOSITORY/contents/src/main/updater/windows-portable/fork-portable-channel.json?ref=$SOURCE" --jq .content | base64 -d | jq -er .publicKey)
+          export PORTABLE_PUBLIC_KEY
+          node config/scripts/release/fork-portable/sign.mjs assets
+      - name: Tag the built commit and publish the complete release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --no-tags origin "refs/heads/portable-builds/$TAG-$SOURCE"
+          [[ "$(git rev-parse FETCH_HEAD)" == "$SOURCE" ]]
+          git push origin "$SOURCE:refs/tags/$TAG"
+          title="Orca $TAG (Windows portable)"
+          if gh release view "$TAG" --json isDraft,name > "$RUNNER_TEMP/release.json"; then
+            jq -e --arg title "$title" '.isDraft and .name == $title' "$RUNNER_TEMP/release.json"
+          else
+            gh release create "$TAG" --verify-tag --draft --title "$title" \
+              --notes "Windows x64 portable build of stablyai/orca@$TAG. Extract the ZIP and start Orca.exe."
+          fi
+          gh release upload "$TAG" assets/* --clobber
+          # Preserve the highest stable version as latest when backfilling an older tag.
+          published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+          highest=$(printf '%s\n' "$published" "$TAG" | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          latest=false
+          if [[ "$highest" == "$TAG" ]]; then latest=true; fi
+          gh release edit "$TAG" --draft=false --latest="$latest"
