@@ -160,6 +160,7 @@ function isUnsafeWindowsSegment(part: string): boolean {
 }
 
 function validateAndStripRoot(rawName: string, isDirectory: boolean, rootDir: string): string {
+  // oxlint-disable-next-line no-control-regex -- ZIP path segments must reject control bytes.
   if (/[\x00-\x1f\\:]/.test(rawName)) {
     throw new Error(`Portable update archive contains an unsafe path: ${rawName}`)
   }
