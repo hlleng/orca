@@ -8,17 +8,6 @@ export type LinuxPackageType = LinuxRootPackageType | 'non-root' | 'unusable'
 
 let cachedPackageType: LinuxPackageType | undefined
 let cachedExternallyManaged: boolean | undefined
-let cachedWindowsPortable: boolean | undefined
-
-function readResourcesPackageTypeFile(
-  resourcesPath: string
-): { ok: true; value: string } | { ok: false; code: string | undefined } {
-  try {
-    return { ok: true, value: readFileSync(path.join(resourcesPath, 'package-type'), 'utf8').trim() }
-  } catch (error) {
-    return { ok: false, code: (error as NodeJS.ErrnoException)?.code }
-  }
-}
 
 function warnMarkerUnusable(detail: string): void {
   console.warn(`[updater] linux package-type marker unusable: ${detail}`)
@@ -69,24 +58,41 @@ function hasLegacyAppImageRuntimeIdentity(resourcesPath: unknown): boolean {
   })
 }
 
-function readPackageTypeMarker(): LinuxPackageType {
-  if (process.platform !== 'linux' || !app.isPackaged) {
+function readPackageTypeMarker(): LinuxPackageType | 'portable' {
+  const windows = process.platform === 'win32'
+  if ((!windows && process.platform !== 'linux') || !app.isPackaged) {
     return 'non-root'
   }
   const resourcesPath = process.resourcesPath
   if (typeof resourcesPath !== 'string' || resourcesPath.length === 0) {
+    if (windows) {
+      return 'non-root'
+    }
     warnMarkerUnusable('resourcesPath unavailable')
     return 'unusable'
   }
-  const marker = readResourcesPackageTypeFile(resourcesPath)
-  if (!marker.ok) {
-    if (marker.code === 'ENOENT' && hasLegacyAppImageRuntimeIdentity(resourcesPath)) {
+  let raw: string
+  try {
+    raw = readFileSync(path.join(resourcesPath, 'package-type'), 'utf8')
+  } catch (error) {
+    if (windows) {
       return 'non-root'
     }
-    warnMarkerUnusable(marker.code === 'ENOENT' ? 'marker missing' : 'marker unreadable')
+    if (
+      (error as NodeJS.ErrnoException)?.code === 'ENOENT' &&
+      hasLegacyAppImageRuntimeIdentity(resourcesPath)
+    ) {
+      return 'non-root'
+    }
+    warnMarkerUnusable(
+      (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'marker missing' : 'marker unreadable'
+    )
     return 'unusable'
   }
-  const value = marker.value
+  const value = raw.trim()
+  if (windows) {
+    return value === 'portable' ? 'portable' : 'non-root'
+  }
   if (value === 'deb' || value === 'rpm') {
     return value
   }
@@ -97,28 +103,21 @@ function readPackageTypeMarker(): LinuxPackageType {
   return 'unusable'
 }
 
-/** True only for packaged Windows builds carrying `resources/package-type` = `portable`. */
+// Startup needs the profile location before Electron is ready; update checks reuse that identity.
+const windowsPortable =
+  process.platform === 'win32' &&
+  typeof process.resourcesPath === 'string' &&
+  readPackageTypeMarker() === 'portable'
+
 export function isWindowsPortablePackage(): boolean {
-  if (cachedWindowsPortable === undefined) {
-    if (process.platform !== 'win32' || !app.isPackaged) {
-      cachedWindowsPortable = false
-    } else {
-      const resourcesPath = process.resourcesPath
-      if (typeof resourcesPath !== 'string' || resourcesPath.length === 0) {
-        cachedWindowsPortable = false
-      } else {
-        const marker = readResourcesPackageTypeFile(resourcesPath)
-        cachedWindowsPortable = marker.ok && marker.value === 'portable'
-      }
-    }
-  }
-  return cachedWindowsPortable
+  return windowsPortable
 }
 
 /** Packaged Linux builds require a valid marker, except legacy AppImages with a missing marker. */
 export function getLinuxPackageType(): LinuxPackageType {
   if (cachedPackageType === undefined) {
-    cachedPackageType = readPackageTypeMarker()
+    const marker = process.platform === 'linux' ? readPackageTypeMarker() : 'non-root'
+    cachedPackageType = marker === 'portable' ? 'non-root' : marker
   }
   return cachedPackageType
 }
